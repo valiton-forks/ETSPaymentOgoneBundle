@@ -2,6 +2,7 @@
 
 namespace ETS\Payment\OgoneBundle\Plugin;
 
+use ETS\Payment\OgoneBundle\Response\MaintenanceResponse;
 use JMS\Payment\CoreBundle\BrowserKit\Request;
 use JMS\Payment\CoreBundle\Model\FinancialTransactionInterface;
 use JMS\Payment\CoreBundle\Model\PaymentInstructionInterface;
@@ -18,6 +19,7 @@ use ETS\Payment\OgoneBundle\Client\TokenInterface;
 use ETS\Payment\OgoneBundle\Hash\GeneratorInterface;
 use ETS\Payment\OgoneBundle\Response\DirectResponse;
 use ETS\Payment\OgoneBundle\Response\ResponseInterface;
+use JMS\Payment\CoreBundle\Util\Number;
 
 /**
  * Copyright 2013 ETSGlobal <ecs@etsglobal.org>
@@ -86,6 +88,8 @@ class OgoneGatewayPlugin extends GatewayPlugin
         "OWNERTOWN"    => 40,
         "OWNERTELNO"   => 20,
         "OWNERTELNO2"  => 20,
+        "ALIAS"        => 40,
+        "ALIASUSAGE"   => 80,
     );
 
     /**
@@ -207,6 +211,7 @@ class OgoneGatewayPlugin extends GatewayPlugin
         $parameters = array(
             'AMOUNT' => $transaction->getRequestedAmount() * 100,
             'OPERATION' => $operation,
+            'PAYID' => $paymentId,
             'PSPID' => $this->token->getPspid(),
             'USERID'  => $this->token->getApiUser(),
             'PSWD'    => $this->token->getApiPassword(),
@@ -214,9 +219,19 @@ class OgoneGatewayPlugin extends GatewayPlugin
 
         $parameters['SHASIGN'] = $this->hashGenerator->generate($parameters);
 
-        $response = $this->sendMaintenanceApiRequest($parameters);
+        $response = new MaintenanceResponse($this->sendMaintenanceApiRequest($parameters));
 
-        $transaction->setReferenceNumber($paymentId);
+        if (!$response->isDepositing() && !$response->isDeposited()) {
+            $ex = new FinancialException(sprintf('Payment status "%s" is not valid for deposit', $response->getStatus()));
+            $ex->setFinancialTransaction($transaction);
+            $transaction->setResponseCode($response->getErrorCode());
+            $transaction->setReasonCode($response->getStatus());
+
+            throw $ex;
+        }
+
+        $transaction->setProcessedAmount($response->getAmount());
+        $transaction->setReferenceNumber($response->getPaymentId());
         $transaction->setResponseCode(PluginInterface::RESPONSE_CODE_SUCCESS);
         $transaction->setReasonCode(PluginInterface::REASON_CODE_SUCCESS);
     }
