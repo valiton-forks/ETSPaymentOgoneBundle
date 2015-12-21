@@ -2,6 +2,7 @@
 
 namespace ETS\Payment\OgoneBundle\Plugin;
 
+use ETS\Payment\OgoneBundle\Response\MaintenanceResponse;
 use JMS\Payment\CoreBundle\BrowserKit\Request;
 use JMS\Payment\CoreBundle\Model\FinancialTransactionInterface;
 use JMS\Payment\CoreBundle\Model\PaymentInstructionInterface;
@@ -17,6 +18,7 @@ use ETS\Payment\OgoneBundle\Client\TokenInterface;
 use ETS\Payment\OgoneBundle\Hash\GeneratorInterface;
 use ETS\Payment\OgoneBundle\Response\DirectResponse;
 use ETS\Payment\OgoneBundle\Response\ResponseInterface;
+use JMS\Payment\CoreBundle\Util\Number;
 
 /**
  * Copyright 2013 ETSGlobal <ecs@etsglobal.org>
@@ -85,6 +87,8 @@ class OgoneGatewayPlugin extends OgoneGatewayBasePlugin
         "OWNERTOWN"    => 40,
         "OWNERTELNO"   => 20,
         "OWNERTELNO2"  => 20,
+        "ALIAS"        => 40,
+        "ALIASUSAGE"   => 80,
     );
 
     /**
@@ -129,7 +133,6 @@ class OgoneGatewayPlugin extends OgoneGatewayBasePlugin
     public function approveAndDeposit(FinancialTransactionInterface $transaction, $retry)
     {
         $this->approve($transaction, $retry);
-        $this->deposit($transaction, $retry);
     }
 
     /**
@@ -194,18 +197,30 @@ class OgoneGatewayPlugin extends OgoneGatewayBasePlugin
      */
     public function deposit(FinancialTransactionInterface $transaction, $retry)
     {
-        if ($transaction->getState() === FinancialTransactionInterface::STATE_NEW) {
-            throw $this->createRedirectActionException($transaction);
+        $paymentId = $transaction->getPayment()->getApproveTransaction()->getReferenceNumber();
+
+        if (Number::compare($transaction->getPayment()->getApprovedAmount(), $transaction->getRequestedAmount()) === 0) {
+            $operation = 'SAL';
+        }
+        else {
+            $operation = 'SAS';
         }
 
-        $response = $this->getResponse($transaction);
+        $parameters = array(
+            'AMOUNT' => $transaction->getRequestedAmount() * 100,
+            'OPERATION' => $operation,
+            'PAYID' => $paymentId,
+            'PSPID' => $this->token->getPspid(),
+            'USERID'  => $this->token->getApiUser(),
+            'PSWD'    => $this->token->getApiPassword(),
+        );
 
-        if ($response->isDepositing()) {
-            throw new PaymentPendingException(sprintf('Payment is still pending, status: %s.', $response->getStatus()));
-        }
+        $parameters['SHASIGN'] = $this->hashGenerator->generate($parameters);
 
-        if (!$response->isDeposited()) {
-            $ex = new FinancialException(sprintf('Payment status "%s" is not valid for depositing', $response->getStatus()));
+        $response = new MaintenanceResponse($this->sendMaintenanceApiRequest($parameters));
+
+        if (!$response->isDepositing() && !$response->isDeposited()) {
+            $ex = new FinancialException(sprintf('Payment status "%s" is not valid for deposit', $response->getStatus()));
             $ex->setFinancialTransaction($transaction);
             $transaction->setResponseCode($response->getErrorCode());
             $transaction->setReasonCode($response->getStatus());
@@ -214,9 +229,11 @@ class OgoneGatewayPlugin extends OgoneGatewayBasePlugin
         }
 
         $transaction->setProcessedAmount($response->getAmount());
+        $transaction->setReferenceNumber($response->getPaymentId());
         $transaction->setResponseCode(PluginInterface::RESPONSE_CODE_SUCCESS);
         $transaction->setReasonCode(PluginInterface::REASON_CODE_SUCCESS);
     }
+
 
     /**
      * This method checks whether all required parameters exist in the given
@@ -286,6 +303,11 @@ class OgoneGatewayPlugin extends OgoneGatewayBasePlugin
             }
         }
 
+        $operation = 'RES';
+        if ($extendedData->has('operation')) {
+            $operation = $extendedData->get('operation');
+        }
+
         $parameters = array_merge(
             self::normalize($additionalData),
             $this->redirectionConfig->getRequestParameters($extendedData),
@@ -295,7 +317,8 @@ class OgoneGatewayPlugin extends OgoneGatewayBasePlugin
                 "PSPID"    => $this->token->getPspid(),
                 "AMOUNT"   => $transaction->getRequestedAmount() * 100,
                 "CURRENCY" => $transaction->getPayment()->getPaymentInstruction()->getCurrency(),
-                "LANGUAGE" => $extendedData->get('lang')
+                "LANGUAGE" => $extendedData->get('lang'),
+                "OPERATION" => $operation
             )
         );
 
@@ -381,6 +404,61 @@ class OgoneGatewayPlugin extends OgoneGatewayBasePlugin
         }
 
         return new \SimpleXMLElement($response->getContent());
+    }
+
+    /**
+     * Send maintenance requests to Ogone API
+     *
+     * @param array $parameters
+     *
+     * @return \SimpleXMLElement
+     *
+     * @throws CommunicationException
+     */
+    protected function sendMaintenanceApiRequest(array $parameters)
+    {
+        $response = $this->request(new Request($this->getDirectMaintenanceUrl(), 'POST', $parameters));
+
+        if (200 !== $response->getStatus()) {
+            throw new CommunicationException(sprintf('The API request was not successful (Status: %s): %s', $response->getStatus(), $response->getContent()));
+        }
+
+        return new \SimpleXMLElement($response->getContent());
+    }
+
+    /**
+     * @return string
+     */
+    protected function getStandardOrderUrl()
+    {
+        return sprintf(
+            'https://secure.ogone.com/ncol/%s/orderstandard%s.asp',
+            $this->debug ? 'test' : 'prod',
+            $this->utf8 ? '_utf8' : ''
+        );
+    }
+
+    /**
+     * @return string
+     */
+    protected function getDirectQueryUrl()
+    {
+        return sprintf(
+            'https://secure.ogone.com/ncol/%s/querydirect%s.asp',
+            $this->debug ? 'test' : 'prod',
+            $this->utf8 ? '_utf8' : ''
+        );
+    }
+
+    /**
+     * @return string
+     */
+    protected function getDirectMaintenanceUrl()
+    {
+        return sprintf(
+            'https://secure.ogone.com/ncol/%s/maintenancedirect.asp',
+            $this->debug ? 'test' : 'prod'
+        );
     }
 
     /**
