@@ -195,29 +195,32 @@ class OgoneGatewayPlugin extends GatewayPlugin
      */
     public function deposit(FinancialTransactionInterface $transaction, $retry)
     {
-        if ($transaction->getState() === FinancialTransactionInterface::STATE_NEW) {
-            throw $this->createRedirectActionException($transaction);
+        $paymentId = $transaction->getPayment()->getApproveTransaction()->getReferenceNumber();
+
+        if (Number::compare($transaction->getPayment()->getApprovedAmount(), $transaction->getRequestedAmount()) === 0) {
+            $operation = 'SAL';
+        }
+        else {
+            $operation = 'SAS';
         }
 
-        $response = $this->getResponse($transaction);
+        $parameters = array(
+            'AMOUNT' => $transaction->getRequestedAmount() * 100,
+            'OPERATION' => $operation,
+            'PSPID' => $this->token->getPspid(),
+            'USERID'  => $this->token->getApiUser(),
+            'PSWD'    => $this->token->getApiPassword(),
+        );
 
-        if ($response->isDepositing()) {
-            throw new PaymentPendingException(sprintf('Payment is still pending, status: %s.', $response->getStatus()));
-        }
+        $parameters['SHASIGN'] = $this->hashGenerator->generate($parameters);
 
-        if (!$response->isDeposited()) {
-            $ex = new FinancialException(sprintf('Payment status "%s" is not valid for depositing', $response->getStatus()));
-            $ex->setFinancialTransaction($transaction);
-            $transaction->setResponseCode($response->getErrorCode());
-            $transaction->setReasonCode($response->getStatus());
+        $response = $this->sendMaintenanceApiRequest($parameters);
 
-            throw $ex;
-        }
-
-        $transaction->setProcessedAmount($response->getAmount());
+        $transaction->setReferenceNumber($paymentId);
         $transaction->setResponseCode(PluginInterface::RESPONSE_CODE_SUCCESS);
         $transaction->setReasonCode(PluginInterface::REASON_CODE_SUCCESS);
     }
+
 
     /**
      * This method checks whether all required parameters exist in the given
@@ -385,6 +388,26 @@ class OgoneGatewayPlugin extends GatewayPlugin
     }
 
     /**
+     * Send maintenance requests to Ogone API
+     *
+     * @param array $parameters
+     *
+     * @return \SimpleXMLElement
+     *
+     * @throws CommunicationException
+     */
+    protected function sendMaintenanceApiRequest(array $parameters)
+    {
+        $response = $this->request(new Request($this->getDirectMaintenanceUrl(), 'POST', $parameters));
+
+        if (200 !== $response->getStatus()) {
+            throw new CommunicationException(sprintf('The API request was not successful (Status: %s): %s', $response->getStatus(), $response->getContent()));
+        }
+
+        return new \SimpleXMLElement($response->getContent());
+    }
+
+    /**
      * @return string
      */
     protected function getStandardOrderUrl()
@@ -405,6 +428,17 @@ class OgoneGatewayPlugin extends GatewayPlugin
             'https://secure.ogone.com/ncol/%s/querydirect%s.asp',
             $this->debug ? 'test' : 'prod',
             $this->utf8 ? '_utf8' : ''
+        );
+    }
+
+    /**
+     * @return string
+     */
+    protected function getDirectMaintenanceUrl()
+    {
+        return sprintf(
+            'https://secure.ogone.com/ncol/%s/maintenancedirect.asp',
+            $this->debug ? 'test' : 'prod'
         );
     }
 
