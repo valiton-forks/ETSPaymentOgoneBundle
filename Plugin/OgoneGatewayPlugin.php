@@ -299,7 +299,8 @@ class OgoneGatewayPlugin extends GatewayPlugin
                 "PSPID"    => $this->token->getPspid(),
                 "AMOUNT"   => $transaction->getRequestedAmount() * 100,
                 "CURRENCY" => $transaction->getPayment()->getPaymentInstruction()->getCurrency(),
-                "LANGUAGE" => $extendedData->get('lang')
+                "LANGUAGE" => $extendedData->get('lang'),
+                "OPERATION" => 'RES'
             )
         );
 
