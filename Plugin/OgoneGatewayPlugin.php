@@ -134,7 +134,6 @@ class OgoneGatewayPlugin extends GatewayPlugin
     public function approveAndDeposit(FinancialTransactionInterface $transaction, $retry)
     {
         $this->approve($transaction, $retry);
-        $this->deposit($transaction, $retry);
     }
 
     /**
@@ -305,6 +304,11 @@ class OgoneGatewayPlugin extends GatewayPlugin
             }
         }
 
+        $operation = 'RES';
+        if ($extendedData->has('operation')) {
+            $operation = $extendedData->get('operation');
+        }
+
         $parameters = array_merge(
             self::normalize($additionalData),
             $this->redirectionConfig->getRequestParameters($extendedData),
@@ -315,7 +319,7 @@ class OgoneGatewayPlugin extends GatewayPlugin
                 "AMOUNT"   => $transaction->getRequestedAmount() * 100,
                 "CURRENCY" => $transaction->getPayment()->getPaymentInstruction()->getCurrency(),
                 "LANGUAGE" => $extendedData->get('lang'),
-                "OPERATION" => 'RES'
+                "OPERATION" => $operation
             )
         );
 
